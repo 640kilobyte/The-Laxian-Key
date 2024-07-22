@@ -221,7 +221,7 @@ class bot:
         # проходим тесты
         passed_tests=0
         for test in self.password_verify_complexity_tests:
-            if test.match(input): passed_tests += 1
+            if test.findall(input): passed_tests += 1
         logging.info(f"[U:{update.effective_user.username}] verify_password: passed {passed_tests}")
         # количество пройденных тестов должно совпадать с количеством
         if passed_tests == len(self.password_verify_complexity_tests):
@@ -326,7 +326,7 @@ class bot:
     def get_apt_list_filter(self, update: Update, context):
         input = update.message.text
         logging.info(f"[U:{update.effective_user.username}] get_apt_list: do filter")
-        data=self.exec.run("apt list {pkg} &>/dev/null && apt-cache show {pkg} || apt list | grep {pkg}", {"pkg": input})
+        data=self.exec.run("apt list --installed {pkg} &>/dev/null && apt-cache show {pkg} || apt list | grep {pkg}", {"pkg": input})
         if data:
             self.more(update.effective_user.id,data)
             self.do_more(update, context)
@@ -352,7 +352,7 @@ class bot:
         # подсказка и данные
         update.message.reply_text("Напечатайте уточнение для поиска\n"
                                   +"Когда будет найден один пакет - будет выдана его детальная информация")
-        self.more(update.effective_user.id,self.exec.run("apt list"))
+        self.more(update.effective_user.id,self.exec.run("apt list --installed"))
         self.do_more(update, context)
         return "get_apt_list"
 
@@ -459,6 +459,12 @@ class bot:
             data += f"\n/{i.command} - {i.description}"
         update.message.reply_text(data)
 
+    def do_cancel(self, update: Update, context):
+        """Общая команда отмены диалога"""
+        logging.info(f"[U:{update.effective_user.username}] cancel ")
+        update.message.reply_text('Завершение диалога')
+        return ConversationHandler.END
+
     ##
     # Инициализация класса
     ## 
@@ -473,6 +479,8 @@ class bot:
         logging.debug("Инициализация бота")
         self.updater = Updater(config.token, use_context=True)
         dp = self.updater.dispatcher
+        # общая функция отмены диалога
+        cancel_conversation=CommandHandler('cancel', self.do_cancel)
         # регистрация /start
         dp.add_handler(CommandHandler("start", self.do_start))
         # регистрация /help
@@ -485,7 +493,7 @@ class bot:
                 states={
                     'find_email': [MessageHandler(Filters.text & ~Filters.command, self.find_email)]
                 },
-                fallbacks=[]
+                fallbacks=[cancel_conversation]
             )
         )
         # регистрация /find_email
@@ -508,7 +516,7 @@ class bot:
                 states={
                     'verify_password': [MessageHandler(Filters.text & ~Filters.command, self.verify_password)]
                 },
-                fallbacks=[]
+                fallbacks=[cancel_conversation]
             )
         )
         # регистрация /вызова команд
@@ -523,9 +531,11 @@ class bot:
                 states={
                     'get_apt_list': [MessageHandler(Filters.text & ~Filters.command, self.get_apt_list_filter)],
                 },
-                fallbacks=[]
+                fallbacks=[cancel_conversation]
             )
         )
+        # подсказка по cancel
+        self.register_to_main_menu("cancel", "Отмена ввода данных")
         # регистрация кнопки more
         dp.add_handler(CallbackQueryHandler(self.do_more, pattern="more"))
         # меню
