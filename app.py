@@ -56,7 +56,7 @@ class remote_execution:
     # клиент
     client=None
 
-    safe_args_regex=re.compile('[a-zA-Z0-9.,_-]')
+    safe_args_regex=re.compile('^[a-zA-Z0-9.,_-]+$')
 
     def run_pipes(self, command:str, args:dict={}):
         """Выполнение удаленной команды.
