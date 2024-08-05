@@ -299,7 +299,7 @@ class bot:
                 del self.__save_data[id]
                 msg.reply_text("Сохранено")
             else:
-                logging.error(f"[U:{update.effective_user.username}] save to DB unknown type {self.__save_data[id]["type"]}")
+                logging.error(f"[U:{update.effective_user.username}] save to DB unknown type {self.__save_data[id]['type']}")
                 msg.reply_text("Неизвестная ошибка")
         else:
             logging.error(f"[U:{update.effective_user.username}] save to DB unknown id {id}")
@@ -591,7 +591,7 @@ class bot:
             },
         'get_repl_logs': {
             "desc": "Журнал лога БД репликации",
-            "cmd": 'docker logs -n 10 the-laxian-key-db_slave-1'
+            "cmd": 'docker logs the-laxian-key-db_main-1 2>&1 | grep -i replication | tail -n 10'
             },
     }
     def do_simple_remote_exec(self, update: Update, context):
