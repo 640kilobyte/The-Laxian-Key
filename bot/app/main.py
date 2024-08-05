@@ -7,6 +7,7 @@ from telegram import Update, ForceReply, BotCommand, BotCommandScopeChat, Inline
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, ConversationHandler, CallbackQueryHandler
 import re
 import paramiko
+import psycopg2
 
 class config:
     """Конфигурация приложения"""
@@ -28,13 +29,21 @@ class config:
     #ssh пароль
     ssh_pass=None
 
+    # параметры подключения к базе данных
+    db_host=None
+    db_port=5432
+    db_user=None
+    db_password=None
+    db_database=None
+    db_schema="public"
+
     """Параметры приложения"""
     def __init__(self):
         """Загрузка параметров приложения"""
         # Использование стандартного .env
         load_dotenv()
         # Параметры логирования
-        self.log_level=os.environ.get("LOGLEVEL", default="NOTSET")
+        self.log_level=os.environ.get("LOGLEVEL", default=self.log_level)
         if not self.log_level in ["NOTSET", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]:
             raise BaseException(f"Неизвестный уровень логирования - {self.log_level}")
         self.log_file=os.environ.get("LOGFILE", default=None)
@@ -44,12 +53,25 @@ class config:
         # ssh
         try: self.ssh_host = os.environ["SSH_HOST"]
         except KeyError: raise BaseException("Требуется имя хоста удаленного сервера")
-        try: self.ssh_port=int(os.environ.get("SSH_PORT", default=22))
-        except ValueError: raise BaseException("Номер порта должен быть числом")
+        try: self.ssh_port=int(os.environ.get("SSH_PORT", default=self.ssh_port))
+        except ValueError: raise BaseException("Номер порта SSH должен быть числом")
         try: self.ssh_user = os.environ["SSH_USER"]
         except KeyError: raise BaseException("Требуется имя пользователя удаленного сервера")
         try: self.ssh_pass = os.environ["SSH_PASS"]
         except KeyError: raise BaseException("Требуется имя пароль удаленного сервера")
+        # база данных
+        try: self.db_host = os.environ["DB_HOST"]
+        except KeyError: raise BaseException("Требуется имя сервера базы данных")
+        try: self.db_port=int(os.environ.get("DB_PORT", default=self.db_port))
+        except ValueError: raise BaseException("Номер порта БД должен быть числом")
+        try: self.db_user = os.environ["DB_USER"]
+        except KeyError: raise BaseException("Требуется имя входа базы данных")
+        try: self.db_password = os.environ["DB_PASS"]
+        except KeyError: raise BaseException("Требуется пароль базы данных")
+        try: self.db_database = os.environ["DB_DTBS"]
+        except KeyError: raise BaseException("Требуется имя базы данных")
+        self.db_schema=os.environ.get("DB_SCHM", default=self.db_schema)
+
 
 class remote_execution:
     """Удаленный запуск"""
@@ -112,6 +134,89 @@ class remote_execution:
             password=config.ssh_pass
         )
 
+class db: 
+    """"Работа с базой данных"""
+
+    # подключение
+    conn=None
+
+    # таблица email`ов
+    email_tbl="emails"
+    # таблица номеров телефонов
+    phones_tbl="phones"
+
+    def close(self):
+        """Закрытие подключения к БД"""
+        self.conn.close()
+
+    def __init__(self, config: config):
+        """Инициализация подключение и создание базы данных
+
+        :param config: класс с конфигурацией
+        """
+        # подключение
+        self.conn=psycopg2.connect(
+            dbname=config.db_database,
+            user=config.db_user,
+            password=config.db_password,
+            host=config.db_host,
+            port=config.db_port,
+            options=f"-c search_path={config.db_schema}"
+        )
+        cursor = self.conn.cursor()
+        # создание структуры
+        logging.debug("Создание структуры базы данных")
+        for table in [self.email_tbl, self.phones_tbl]:
+            cursor.execute(f"CREATE SEQUENCE IF NOT EXISTS {table}_seq INCREMENT BY 1 START 1 NO CYCLE NO MAXVALUE CACHE 1")
+            cursor.execute(f"CREATE TABLE IF NOT EXISTS {table} (id INT DEFAULT nextval('{table}_seq') unique not null, record VARCHAR(64) not null)")
+        self.conn.commit()
+        cursor.close()
+
+    def get_records(self, table: str):
+        """Получение списка из базы данных
+        
+        :param table: имя таблицы"""
+        cursor = self.conn.cursor()
+        cursor.execute(f"SELECT id,record FROM {table}")
+        data=cursor.fetchall()
+        cursor.close()
+        return data
+    
+    def add_records(self, table: str, list: list):
+        """Добавление в базу данных
+        
+        :param table: имя таблицы
+        :param list: добавляемые элементы"""
+        cursor = self.conn.cursor()
+        # проще чем executemany
+        save_data=[]
+        for row in list:
+            save_data.append((row,))
+        cursor.executemany(f"INSERT INTO {table} (record) VALUES (%s)", vars_list=save_data)
+        self.conn.commit()
+        cursor.close()
+        return True
+
+    def get_emails(self):
+        """Получение email"""
+        return self.get_records(self.email_tbl)
+    
+    def get_phones(self):
+        """Получение номеров телефонов"""
+        return self.get_records(self.phones_tbl)
+    
+    def add_emails(self, list: list):
+        """Добавление email
+        
+        :param list: добавляемые элементы"""
+        return self.add_records(self.email_tbl, list)
+    
+    def add_phones(self, list: list):
+        """Добавление номеров телефонов
+        
+        :param list: добавляемые элементы"""
+        return self.add_records(self.phones_tbl, list)
+
 class bot:
     """Бот"""
 
@@ -153,7 +258,7 @@ class bot:
         user = update.effective_user
         update.message.reply_text(f"Привет {user.full_name}!\nИспользуй /help для подсказки") 
 
-    def find_re_report(self, input: str, re: re.Pattern):
+    def find_re_report(self, input: str, re: re.Pattern, save_id: int=0, save_type: str=None):
         """Поиск регулярного выражения и вывод информации
         
         :param input: входная строка
@@ -164,24 +269,60 @@ class bot:
         # если ничего не найдено - Null:
         if not search:
             return None
+        if save_id and save_id > 0 and save_type:
+            logging.debug(f"save search for do_save_button")
+            self.__save_data[save_id]={"type": save_type, "list": search}
         # формируем вывод
         output=""
         for i in range(len(search)):
             output += f"{i+1}. {search[i]}\n"
         return output
-    
+
+    __save_data={}
+    def do_save_button(self, update: Update, context):
+        """Команда поддержка работы кнопки save"""
+        id=update.effective_user.id
+        # вызов из сообщения и callback_query
+        if update.callback_query:
+            msg=update.callback_query.message
+        else:
+            msg=update.message
+        if id in self.__save_data:
+            if self.__save_data[id]["type"] == "emails":
+                logging.error(f"[U:{update.effective_user.username}] save emails to DB")
+                self.db.add_emails(self.__save_data[id]["list"])
+                del self.__save_data[id]
+                msg.reply_text("Сохранено")
+            elif self.__save_data[id]["type"] == "phones":
+                logging.error(f"[U:{update.effective_user.username}] save phones to DB")
+                self.db.add_phones(self.__save_data[id]["list"])
+                del self.__save_data[id]
+                msg.reply_text("Сохранено")
+            else:
+                logging.error(f"[U:{update.effective_user.username}] save to DB unknown type {self.__save_data[id]["type"]}")
+                msg.reply_text("Неизвестная ошибка")
+        else:
+            logging.error(f"[U:{update.effective_user.username}] save to DB unknown id {id}")
+            msg.reply_text("Неизвестная ошибка")
+
     ##
     # Поиск Email`ов
     ##
     def find_email(self, update: Update, context):
         """/find_email - получение и проверка ввода пользователя"""
         input = update.message.text
-        reply=self.find_re_report(input, self.email_regex)
+        reply=self.find_re_report(input, self.email_regex, update.effective_user.id, "emails")
         if not reply:
             logging.info(f"[U:{update.effective_user.username}] find_email: not found")
             update.message.reply_text("Не найдены email-адреса")
             return
-        update.message.reply_text(reply)
+        update.message.reply_text(reply,
+                                  reply_markup=InlineKeyboardMarkup(
+                                            [
+                                                [InlineKeyboardButton(f"Сохранить результат", callback_data="save_search")]
+                                            ]
+                                        )
+                                    )
         logging.info(f"[U:{update.effective_user.username}] find_email: end")
         return ConversationHandler.END
 
@@ -190,19 +331,38 @@ class bot:
         logging.info(f"[U:{update.effective_user.username}] find_email: start")
         update.message.reply_text(f'Введите текст для поиска email-адресов')
         return 'find_email'
-    
+
+    def do_get_emails(self, update: Update, context):
+        """/get_emails - получение из БД"""
+        logging.info(f"[U:{update.effective_user.username}] get_emails")
+        rows=self.db.get_emails()
+        output=""
+        if rows:
+            # формируем вывод
+            for i in range(len(rows)):
+                output += f"{rows[i][0]}. {rows[i][1]}\n"
+        else:
+            output="Нет данных"
+        update.message.reply_text(output)
+
     ##
     # Поиск номеров телефонов
     ##
     def find_phone_number(self, update: Update, context):
         """/find_phone_number - получение и проверка ввода пользователя"""
         input = update.message.text
-        reply=self.find_re_report(input, self.phone_number_regex)
+        reply=self.find_re_report(input, self.phone_number_regex, update.effective_user.id, "phones")
         if not reply:
             logging.info(f"[U:{update.effective_user.username}] find_phone_number: not found")
             update.message.reply_text("Не найдены номера телефонов")
             return
-        update.message.reply_text(reply)
+        update.message.reply_text(reply,
+                                  reply_markup=InlineKeyboardMarkup(
+                                            [
+                                                [InlineKeyboardButton(f"Сохранить результат", callback_data="save_search")]
+                                            ]
+                                        )
+                                    )        
         logging.info(f"[U:{update.effective_user.username}] find_phone_number: end")
         return ConversationHandler.END
     
@@ -211,6 +371,19 @@ class bot:
         logging.info(f"[U:{update.effective_user.username}] find_phone_number: start")
         update.message.reply_text(f'Введите текст для поиска номеров телефона')
         return 'find_phone_number'
+
+    def do_get_phones(self, update: Update, context):
+        """/get_phones - получение из БД"""
+        logging.info(f"[U:{update.effective_user.username}] get_phones")
+        rows=self.db.get_phones()
+        output=""
+        if rows:
+            # формируем вывод
+            for i in range(len(rows)):
+                output += f"{rows[i][0]}. {rows[i][1]}\n"
+        else:
+            output="Нет данных"
+        update.message.reply_text(output)
 
     ##
     # Проверка сложности пароля
@@ -298,18 +471,18 @@ class bot:
             if cur_more and (cur_more["total"]>1) and (cur_more["current"] < cur_more["total"]):
                 logging.debug(f"more: next_page")
                 msg.reply_text(
-                    f"```\n{cur_more["pages"][cur_more["current"]-1]}\n```",
+                    f"```\n{cur_more['pages'][cur_more['current']-1]}\n```",
                     parse_mode='MarkdownV2',
                     reply_markup=InlineKeyboardMarkup(
                             [
-                                [InlineKeyboardButton(f"--More-- Page {cur_more["current"]} of {cur_more["total"]}", callback_data="more")]
+                                [InlineKeyboardButton(f"--More-- Page {cur_more['current']} of {cur_more['total']}", callback_data="more")]
                             ]
                         )
                     )
                 self.__more_pages[id]["current"] += 1
             elif cur_more and (cur_more["current"] == cur_more["total"]):
                 msg.reply_text(
-                    f"```\n{cur_more["pages"][cur_more["current"]-1]}\n```",
+                    f"```\n{cur_more['pages'][cur_more['current']-1]}\n```",
                     parse_mode='MarkdownV2'
                     )
                 if self.__more_pages[id]: del self.__more_pages[id]
@@ -411,10 +584,14 @@ class bot:
         'get_ss_connected': {
             "desc": "Информация об активных (connected) сокетах",
             'cmd': 'ss state connected'
-        },
+            },
         'get_services': {
             "desc": "Состояние сервисов",
             "cmd": 'systemctl --no-pager --type=service'
+            },
+        'get_repl_logs': {
+            "desc": "Журнал лога БД репликации",
+            "cmd": 'docker logs -n 10 the-laxian-key-db_slave-1'
             },
     }
     def do_simple_remote_exec(self, update: Update, context):
@@ -485,6 +662,8 @@ class bot:
         dp.add_handler(CommandHandler("start", self.do_start))
         # регистрация /help
         dp.add_handler(CommandHandler("help", self.do_help))
+        # регистрация кнопки save
+        dp.add_handler(CallbackQueryHandler(self.do_save_button, pattern="save_search"))
         # регистрация /find_email
         self.register_to_main_menu("find_email", "Поиск email-адресов в тексте")
         dp.add_handler(
@@ -496,7 +675,10 @@ class bot:
                 fallbacks=[cancel_conversation]
             )
         )
-        # регистрация /find_email
+        # регистрация /get_emails
+        self.register_to_main_menu("get_emails", "Сохраненные email")
+        dp.add_handler(CommandHandler("get_emails", self.do_get_emails))
+        # регистрация /find_phone_number
         self.register_to_main_menu("find_phone_number", "Поиск телефонных номеров в тексте")
         dp.add_handler(
             ConversationHandler(
@@ -507,6 +689,9 @@ class bot:
                 fallbacks=[]
             )
         )
+        # регистрация /get_phones
+        self.register_to_main_menu("get_phone_numbers", "Сохраненные телефонные номера")
+        dp.add_handler(CommandHandler("get_phone_numbers", self.do_get_phones))
         
         # регистрация /verify_password
         self.register_to_main_menu("verify_password", "Проверка сложности пароля")
@@ -542,6 +727,9 @@ class bot:
         self.main_menu()
 
     def start(self):
+        # база данных
+        logging.info("Подключение к БД")
+        self.db=db(self.config)
         # инициализация удаленного запуска
         logging.info("Инициализация удаленного подключения")
         self.exec=remote_execution(self.config)
@@ -552,6 +740,7 @@ class bot:
         self.updater.idle()
         logging.info("Прерывание работы")
         self.exec.close()
+        self.db.close()
 
 def main():
     # инициализация логирования в консоль

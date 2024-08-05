@@ -1,0 +1,5 @@
+{
+    "docker.environment": {
+        "DOCKER_HOST": "tcp://localhost:12375"
+    }
+}

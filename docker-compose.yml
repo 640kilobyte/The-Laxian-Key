@@ -1,0 +1,61 @@
+services:
+
+# Бот
+  bot:
+    env_file:
+      - path: .env
+        required: true
+      - path: bot/.env
+        required: false
+    image: bot_image
+    build: ./bot
+    networks:
+      - front
+      - backend
+    depends_on:
+      - db_main
+
+# Основная БД
+  db_main:
+    env_file:
+      - path: .env
+        required: true
+      - path: db/.env
+        required: false
+    image: db_image
+    build: ./db/master
+    networks:
+      - backend
+    volumes:
+      - /srv/tlk/db_main:/var/lib/postgresql/data
+    ports:
+      - 5432:5432
+
+# Реплика
+  db_slave:
+    env_file:
+      - path: .env
+        required: true
+      - path: db/.env
+        required: false
+    image: db_repl_image
+    build: ./db/slave
+    networks:
+      - backend
+    volumes:
+      - /srv/tlk/db_slave:/var/lib/postgresql/data
+    ports:
+      - 6432:5432
+
+# Сети
+networks:
+  # Публичная сеть
+  front:
+    driver: bridge
+  # Внутреняя сеть
+  backend:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.31.255.0/24
+    
