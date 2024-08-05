@@ -2,7 +2,7 @@
 
 Создан бот [The_Laxian_Key_bot](https://t.me/The_Laxian_Key_bot). Для включения - напишите [Red_Lion](https://t.me/red_lion)
 
-Исходный код - [app.py](app.py)
+Исходный код - [app.py](bot_image/app/main.py)
 
 Конфигурация через `.env` (которого нет в репозитории - `.gitignore`)
 
